@@ -9,6 +9,7 @@ use {
     },
     std::{collections::HashMap, env, fmt, str::FromStr},
 };
+use once_cell::sync::Lazy;
 
 mod field_as_string;
 mod field_instruction;
@@ -18,9 +19,20 @@ mod field_pubkey;
 /// A `Result` alias where the `Err` case is `jup_ag::Error`.
 pub type Result<T> = std::result::Result<T, Error>;
 
+static CLIENT: Lazy<reqwest::Client> = Lazy::new(|| reqwest::Client::new());
+fn get_client() -> &'static reqwest::Client {
+    &CLIENT
+}
+
+fn api_key() -> String {
+    env::var
+        ("API_KEY")
+        .unwrap_or_else(|_| "test".to_string())
+}
+
 // Reference: https://quote-api.jup.ag/v4/docs/static/index.html
 fn quote_api_url() -> String {
-    env::var("QUOTE_API_URL").unwrap_or_else(|_| "https://quote-api.jup.ag/v6".to_string())
+    env::var("QUOTE_API_URL").unwrap_or_else(|_| "http://jupiter.solanavibestation.com/v6".to_string())
 }
 
 // Reference: https://quote-api.jup.ag/docs/static/index.html
@@ -185,7 +197,7 @@ pub async fn price(input_mint: Pubkey, output_mint: Pubkey, ui_amount: f64) -> R
         "{base_url}/price?id={input_mint}&vsToken={output_mint}&amount={ui_amount}",
         base_url = price_api_url(),
     );
-    maybe_jupiter_api_error(reqwest::get(url).await?.json().await?)
+    maybe_jupiter_api_error(get_client().get(url).send().await?.json().await?)
 }
 
 #[derive(Serialize, Deserialize, Default, PartialEq, Clone, Debug)]
@@ -236,7 +248,7 @@ pub async fn quote(
     quote_config: QuoteConfig,
 ) -> Result<Quote> {
     let url = format!(
-        "{base_url}/quote?inputMint={input_mint}&outputMint={output_mint}&amount={amount}&onlyDirectRoutes={}&{}{}{}{}{}{}{}",
+        "{base_url}/quote?api_key={api_key}&inputMint={input_mint}&outputMint={output_mint}&amount={amount}&onlyDirectRoutes={}&{}{}{}{}{}{}{}",
         quote_config.only_direct_routes,
         quote_config
             .as_legacy_transaction
@@ -267,9 +279,10 @@ pub async fn quote(
             .map(|max_accounts| format!("&maxAccounts={max_accounts}"))
             .unwrap_or_default(),
         base_url=quote_api_url(),
+        api_key=api_key(),
     );
 
-    maybe_jupiter_api_error(reqwest::get(url).await?.json().await?)
+    maybe_jupiter_api_error(get_client().get(url).send().await?.json().await?)
 }
 
 #[derive(Debug)]
@@ -327,11 +340,10 @@ struct SwapResponse {
 
 /// Get swap serialized transactions for a quote
 pub async fn swap(swap_request: SwapRequest) -> Result<Swap> {
-    let url = format!("{}/swap", quote_api_url());
+    let url = format!("{}/swap?api_key={}", quote_api_url(), api_key());
 
     let response = maybe_jupiter_api_error::<SwapResponse>(
-        reqwest::Client::builder()
-            .build()?
+        get_client()
             .post(url)
             .header("Accept", "application/json")
             .json(&swap_request)
@@ -354,10 +366,9 @@ pub async fn swap(swap_request: SwapRequest) -> Result<Swap> {
 
 /// Get swap serialized transaction instructions for a quote
 pub async fn swap_instructions(swap_request: SwapRequest) -> Result<SwapInstructions> {
-    let url = format!("{}/swap-instructions", quote_api_url());
+    let url = format!("{}/swap-instructions?api_key={}", quote_api_url(), api_key());
 
-    let response = reqwest::Client::builder()
-        .build()?
+    let response = get_client()
         .post(url)
         .header("Accept", "application/json")
         .json(&swap_request)
@@ -374,8 +385,9 @@ pub async fn swap_instructions(swap_request: SwapRequest) -> Result<SwapInstruct
 /// Returns a hash map, input mint as key and an array of valid output mint as values
 pub async fn route_map() -> Result<RouteMap> {
     let url = format!(
-        "{}/indexed-route-map?onlyDirectRoutes=false",
-        quote_api_url()
+        "{}/indexed-route-map?api_key={}&onlyDirectRoutes=false",
+        quote_api_url(),
+        api_key(),
     );
 
     #[derive(Debug, Deserialize)]
@@ -385,7 +397,7 @@ pub async fn route_map() -> Result<RouteMap> {
         indexed_route_map: HashMap<usize, Vec<usize>>,
     }
 
-    let response = reqwest::get(url).await?.json::<IndexedRouteMap>().await?;
+    let response = get_client().get(url).send().await?.json::<IndexedRouteMap>().await?;
 
     let mint_keys = response
         .mint_keys
